@@ -7,7 +7,7 @@ pyarrow==14.0.1
 # Computer Vision & ML (latest stable versions that work together)
 torch==2.3.1
 torchvision==0.18.1
-sentence-transformers==2.2.2
+sentence-transformers==3.0.1
 Pillow==10.1.0
 
 # CLIP (use prebuilt package, not git source)
