@@ -6,17 +6,53 @@ import psutil
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import os
+import subprocess
+import time
 
 st.set_page_config(page_title="Product Recommendations", layout="wide")
 
-
 @st.cache_resource
-def get_connection():
-    return sqlite3.connect("data/recommendations.db", check_same_thread=False)
+def check_and_init_pipeline():
+    """Check if pipeline is complete; if not, return False."""
+    artifacts = [
+        "data/processed/products_clean.parquet",
+        "data/embeddings/products_with_embeddings.pkl",
+        "data/chroma_db",
+        "data/recommendations.db",
+    ]
+    return all(os.path.exists(a) for a in artifacts)
 
+# Check status
+pipeline_ready = check_and_init_pipeline()
 
-conn = get_connection()
+if not pipeline_ready:
+    st.warning("⏳ Pipeline initializing... (first load only, takes ~5 min)")
+    st.info("""
+    Your app is generating embeddings for the first time.
+    This happens only once. Please check back in a few minutes.
+    
+    Steps:
+    1. Generating sample data...
+    2. Preprocessing...
+    3. Creating embeddings (longest step)...
+    4. Indexing vectors...
+    5. Setting up database...
+    """)
+    
+    # Trigger pipeline in background (don't wait)
+    if not os.path.exists(".pipeline_started"):
+        with open(".pipeline_started", "w") as f:
+            f.write("1")
+        
+        # Start pipeline in background
+        subprocess.Popen([
+            "python", "scripts/generate_sample_data.py"
+        ])
+    
+    st.stop()
 
+# If we get here, pipeline is ready
 st.title("🛍️ Product Recommendation System")
 st.markdown("Local prototype - zero cloud costs!")
 
