@@ -1,40 +1,39 @@
-# Core
+# Core Data Processing
 pandas==2.1.3
-numpy==1.24.3
+numpy==1.26.4
 scikit-learn==1.3.2
-
-# Parquet support for pandas
 pyarrow==14.0.1
 
-# PySpark local
-pyspark==3.5.0
-
-# CV & ML
-torch==2.1.0
-torchvision==0.16.0
+# Computer Vision & ML (latest stable versions that work together)
+torch==2.3.1
+torchvision==0.18.1
 sentence-transformers==2.2.2
 Pillow==10.1.0
 
-# CLIP
+# CLIP (use prebuilt package, not git source)
+openai-clip==1.0.1
 ftfy==6.1.1
 regex==2023.10.3
-git+https://github.com/openai/CLIP.git
 
-# Vector DB
+# Vector Database (ChromaDB - using new PersistentClient API)
 chromadb==0.4.18
 
-# API
+# API & Web
 fastapi==0.104.1
 uvicorn==0.24.0
-
-# Dashboard
 streamlit==1.28.2
 plotly==5.18.0
-psutil==5.9.8
+requests==2.31.0
 
-# Utilities / notebooks
+# System utilities
+psutil==5.9.8
 tqdm==4.66.1
 python-dotenv==1.0.0
 matplotlib==3.8.2
 seaborn==0.13.0
+
+# Transformers (compatible with torch 2.3)
+transformers==4.41.0
+
+# Optional: Jupyter for local dev
 jupyter==1.0.0
