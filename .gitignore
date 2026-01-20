@@ -1,0 +1,17 @@
+data/raw/images/
+data/processed/
+data/embeddings/
+data/chroma_db/
+data/recommendations.db
+
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
