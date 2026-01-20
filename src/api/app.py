@@ -11,21 +11,7 @@ import torch
 import clip
 from sentence_transformers import SentenceTransformer
 
-@st.cache_resource
-def ensure_pipeline_complete():
-    """Generate data if it doesn't exist."""
-    if not os.path.exists("data/chroma_db"):
-        st.info("First load: generating embeddings... (1-2 min)")
-        
-        # Run pipeline steps
-        os.system("python scripts/generate_sample_data.py > /dev/null 2>&1")
-        os.system("python src/models/generate_embeddings.py > /dev/null 2>&1")
-        os.system("python src/models/setup_vector_db.py > /dev/null 2>&1")
-        os.system("python src/database/init_db.py > /dev/null 2>&1")
-        
-        st.success("✓ Ready!")
 
-ensure_pipeline_complete()
 
 app = FastAPI(title="Local Recommendation API")
 
