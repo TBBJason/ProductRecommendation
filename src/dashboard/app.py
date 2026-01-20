@@ -103,7 +103,6 @@ page = st.sidebar.radio("Go to", ["Search", "Analytics", "System Status"])
 # ============================================================================
 # PAGE: SEARCH
 # ============================================================================
-
 if page == "Search":
     st.header("Product Search")
     st.markdown("Search for products using text descriptions")
@@ -118,8 +117,16 @@ if page == "Search":
     if st.button("Search", type="primary") and query:
         with st.spinner("Searching..."):
             try:
-                # Embed the query
-                query_embedding = text_model.encode(query).tolist()
+                import numpy as np
+                
+                # Generate text embedding (384-dim)
+                text_embedding = text_model.encode(query)
+                
+                # Add zero image embedding (512-dim) for consistency with stored embeddings
+                image_embedding = np.zeros(512)
+                
+                # Combine to 896-dim (matches ChromaDB collection)
+                query_embedding = np.concatenate([text_embedding, image_embedding]).tolist()
                 
                 # Search in ChromaDB
                 results = collection.query(
@@ -157,6 +164,7 @@ if page == "Search":
             except Exception as e:
                 st.error(f"Search error: {str(e)}")
                 st.info("Please check the System Status page to ensure the database is ready.")
+
 
 # ============================================================================
 # PAGE: ANALYTICS
