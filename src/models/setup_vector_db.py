@@ -1,52 +1,39 @@
-import os
-import pandas as pd
-from tqdm import tqdm
-
 import chromadb
-from chromadb.config import Settings
+import pickle
+import os
 
-os.makedirs("data/chroma_db", exist_ok=True)
+print("Loading embeddings...")
+with open("data/embeddings/products_with_embeddings.pkl", "rb") as f:
+    embeddings_data = pickle.load(f)
 
-client = chromadb.Client(
-    Settings(chroma_db_impl="duckdb+parquet", persist_directory="data/chroma_db")
-)
+print(f"Setting up vector database with {len(embeddings_data)} products...")
 
-collection = client.get_or_create_collection(
+# Create persistent client (new API)
+client = chromadb.PersistentClient(path="data/chroma_db")
+
+# Delete collection if it exists
+try:
+    client.delete_collection(name="products")
+except:
+    pass
+
+# Create new collection
+collection = client.create_collection(
     name="products",
-    metadata={"description": "Product embeddings for recommendations"},
+    metadata={"hnsw:space": "cosine"}
 )
 
-print("✓ ChromaDB initialized")
-
-df = pd.read_pickle("data/embeddings/products_with_embeddings.pkl")
-print(f"Loaded {len(df)} products with embeddings")
-
-batch_size = 100
-for i in tqdm(range(0, len(df), batch_size), desc="Indexing products"):
-    batch = df.iloc[i : i + batch_size]
-
-    ids = batch["product_id"].tolist()
-    embeddings = [e.tolist() for e in batch["embedding"].tolist()]
-    metadatas = batch[["title", "category", "brand", "price"]].to_dict("records")
-    documents = batch["description"].tolist()
-
+# Add embeddings to collection
+for item in embeddings_data:
     collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        metadatas=metadatas,
-        documents=documents,
+        ids=[str(item["product_id"])],
+        embeddings=[item["combined_embedding"].tolist()],
+        metadatas=[{
+            "title": item["title"],
+            "category": item["category"],
+            "price": float(item["price"]),
+            "product_id": str(item["product_id"]),
+        }],
+        documents=[f"{item['title']} {item['category']}"]
     )
 
-print(f"✓ Indexed {collection.count()} products in ChromaDB")
-
-# Simple sanity check: query with the first product embedding
-test_embedding = df.iloc[0]["embedding"].tolist()
-results = collection.query(query_embeddings=[test_embedding], n_results=5)
-
-print("\nTest query results:")
-for rank, (id_, distance) in enumerate(
-    zip(results["ids"][0], results["distances"][0]), start=1
-):
-    print(f"{rank}. Product {id_} (distance: {distance:.4f})")
-
-print("\n✓ Vector database ready!")
