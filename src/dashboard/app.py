@@ -1,165 +1,249 @@
-import os
-import sqlite3
-import requests
-import psutil
-
-import pandas as pd
 import streamlit as st
-import plotly.express as px
+import pandas as pd
+import sqlite3
 import os
-import subprocess
-import time
+import chromadb
+from sentence_transformers import SentenceTransformer
+import plotly.express as px
 
 st.set_page_config(page_title="Product Recommendations", layout="wide")
 
-@st.cache_resource
-def check_and_init_pipeline():
-    """Check if pipeline is complete; if not, return False."""
-    artifacts = [
-        "data/processed/products_clean.parquet",
-        "data/embeddings/products_with_embeddings.pkl",
-        "data/chroma_db",
-        "data/recommendations.db",
-    ]
-    return all(os.path.exists(a) for a in artifacts)
+# ============================================================================
+# CHECK IF PIPELINE IS COMPLETE
+# ============================================================================
 
-# Check status
-pipeline_ready = check_and_init_pipeline()
+required_files = [
+    "data/chroma_db",
+    "data/recommendations.db",
+]
 
-if not pipeline_ready:
-    st.warning("⏳ Pipeline initializing... (first load only, takes ~5 min)")
+if not all(os.path.exists(f) for f in required_files):
+    st.warning("⏳ First load: Initializing pipeline...")
     st.info("""
-    Your app is generating embeddings for the first time.
-    This happens only once. Please check back in a few minutes.
+    Your app is generating embeddings and setting up the database.
+    This takes about 5-10 minutes on first load.
     
-    Steps:
-    1. Generating sample data...
-    2. Preprocessing...
-    3. Creating embeddings (longest step)...
-    4. Indexing vectors...
-    5. Setting up database...
+    Please refresh the page in a few minutes.
     """)
-    
-    # Trigger pipeline in background (don't wait)
-    if not os.path.exists(".pipeline_started"):
-        with open(".pipeline_started", "w") as f:
-            f.write("1")
-        
-        # Start pipeline in background
-        subprocess.Popen([
-            "python", "scripts/generate_sample_data.py"
-        ])
-    
     st.stop()
 
-# If we get here, pipeline is ready
+# ============================================================================
+# LOAD MODELS & DATABASE
+# ============================================================================
+
+@st.cache_resource
+def get_connection():
+    return sqlite3.connect("data/recommendations.db", check_same_thread=False)
+
+@st.cache_resource
+def load_models():
+    text_model = SentenceTransformer("all-MiniLM-L6-v2")
+    chroma_client = chromadb.PersistentClient(path="data/chroma_db")
+    collection = chroma_client.get_collection("products")
+    return text_model, collection
+
+conn = get_connection()
+text_model, collection = load_models()
+
+# ============================================================================
+# MAIN UI
+# ============================================================================
+
 st.title("🛍️ Product Recommendation System")
-st.markdown("Local prototype - zero cloud costs!")
+st.markdown("Multimodal product search + analytics")
 
 st.sidebar.header("Navigation")
 page = st.sidebar.radio("Go to", ["Search", "Analytics", "System Status"])
 
+# ============================================================================
+# PAGE: SEARCH
+# ============================================================================
 
 if page == "Search":
     st.header("Product Search")
-
-    query = st.text_input("Search for products:", placeholder="e.g., 'blue electronics'")
+    st.markdown("Search for products using text descriptions")
+    
+    query = st.text_input(
+        "Search for products:",
+        placeholder="e.g., 'blue electronics', 'leather wallet', 'outdoor gear'",
+        key="search_query"
+    )
     top_k = st.slider("Number of results:", 5, 20, 10)
-
-    if st.button("Search") and query:
+    
+    if st.button("Search", type="primary") and query:
         with st.spinner("Searching..."):
             try:
-                response = requests.post(
-                    "http://localhost:8000/search",
-                    json={"query": query, "top_k": top_k},
-                    timeout=30,
+                # Embed the query
+                query_embedding = text_model.encode(query).tolist()
+                
+                # Search in ChromaDB
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k,
+                    include=["documents", "metadatas", "distances"]
                 )
-                response.raise_for_status()
-                results = response.json()
-
-                st.subheader(f"Found {len(results)} results")
-
-                for result in results:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.markdown(f"### {result['title']}")
-                        st.write(f"**Category:** {result['category']}")
-                        st.write(f"**Score:** {result['score']:.3f}")
-                    with col2:
-                        st.metric("Price", f"${result['price']:.2f}")
-                    st.divider()
-
+                
+                if results["ids"] and results["ids"][0]:
+                    st.subheader(f"Found {len(results['ids'][0])} results")
+                    
+                    for i, (doc_id, metadata, distance) in enumerate(
+                        zip(results["ids"][0], results["metadatas"][0], results["distances"][0])
+                    ):
+                        # Calculate similarity score (inverse of distance)
+                        score = 1 - (distance / 2)  # Normalize to 0-1
+                        
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        
+                        with col1:
+                            st.markdown(f"### {i+1}. {metadata.get('title', 'N/A')}")
+                            st.write(f"**Category:** {metadata.get('category', 'N/A')}")
+                            st.write(f"**Similarity Score:** {score:.1%}")
+                        
+                        with col2:
+                            st.metric("Price", f"${float(metadata.get('price', 0)):.2f}")
+                        
+                        with col3:
+                            st.metric("ID", metadata.get('product_id', 'N/A'))
+                        
+                        st.divider()
+                else:
+                    st.warning("No results found. Try a different search query.")
+            
             except Exception as e:
-                st.error(f"Error: {e}")
-                st.info("Make sure the API server is running: `python src/api/app.py`")
+                st.error(f"Search error: {str(e)}")
+                st.info("Please check the System Status page to ensure the database is ready.")
 
+# ============================================================================
+# PAGE: ANALYTICS
+# ============================================================================
 
 elif page == "Analytics":
     st.header("System Analytics")
+    st.markdown("Product inventory and interaction statistics")
+    
+    try:
+        # Load data
+        df_products = pd.read_sql("SELECT * FROM products", conn)
+        df_interactions = pd.read_sql("SELECT * FROM interactions", conn)
+        
+        # Key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Products", len(df_products))
+        col2.metric("Categories", int(df_products["category"].nunique()))
+        col3.metric("Avg Price", f"${df_products['price'].mean():.2f}")
+        col4.metric("Total Interactions", len(df_interactions))
+        
+        st.divider()
+        
+        # Products by category
+        st.subheader("Products by Category")
+        category_counts = df_products["category"].value_counts().reset_index()
+        category_counts.columns = ["category", "count"]
+        fig_category = px.bar(
+            category_counts,
+            x="category",
+            y="count",
+            labels={"category": "Category", "count": "Count"},
+            title="Product Distribution by Category",
+            color="count",
+            color_continuous_scale="Viridis"
+        )
+        st.plotly_chart(fig_category, use_container_width=True)
+        
+        # Price distribution
+        st.subheader("Price Distribution")
+        fig_price = px.histogram(
+            df_products,
+            x="price",
+            nbins=30,
+            title="Product Price Distribution",
+            labels={"price": "Price ($)"},
+            color_discrete_sequence=["#00A86B"]
+        )
+        st.plotly_chart(fig_price, use_container_width=True)
+        
+        # Interaction types
+        st.subheader("Interaction Types")
+        interaction_counts = df_interactions["interaction_type"].value_counts()
+        fig_interaction = px.pie(
+            values=interaction_counts.values,
+            names=interaction_counts.index,
+            title="Distribution of Interaction Types",
+            color_discrete_sequence=px.colors.qualitative.Set3
+        )
+        st.plotly_chart(fig_interaction, use_container_width=True)
+        
+        # Recent interactions
+        st.subheader("Recent Interactions")
+        df_interactions_recent = pd.read_sql(
+            "SELECT * FROM interactions ORDER BY timestamp DESC LIMIT 10",
+            conn
+        )
+        st.dataframe(df_interactions_recent, use_container_width=True)
+    
+    except Exception as e:
+        st.error(f"Analytics error: {str(e)}")
 
-    df_products = pd.read_sql("SELECT * FROM products", conn)
+# ============================================================================
+# PAGE: SYSTEM STATUS
+# ============================================================================
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Products", len(df_products))
-    col2.metric("Categories", int(df_products["category"].nunique()))
-    col3.metric("Avg Price", f"${df_products['price'].mean():.2f}")
-
-    st.subheader("Products by Category")
-    category_counts = df_products["category"].value_counts()
-    fig = px.bar(
-        x=category_counts.index,
-        y=category_counts.values,
-        labels={"x": "Category", "y": "Count"},
-        title="Product Distribution",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Price Distribution")
-    fig = px.histogram(df_products, x="price", nbins=30, title="Product Prices")
-    st.plotly_chart(fig, use_container_width=True)
-
-    df_interactions = pd.read_sql("SELECT * FROM interactions", conn)
-
-    st.subheader("Interaction Types")
-    interaction_counts = df_interactions["interaction_type"].value_counts()
-    fig = px.pie(
-        values=interaction_counts.values,
-        names=interaction_counts.index,
-        title="Interaction Types",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-else:
+else:  # System Status
     st.header("System Status")
-
-    st.subheader("Data Files")
+    
+    # Data files
+    st.subheader("📁 Data Files")
     files_to_check = [
-        ("Products", "data/processed/products_clean.parquet"),
+        ("Products Data", "data/processed/products_clean.parquet"),
         ("Embeddings", "data/embeddings/products_with_embeddings.pkl"),
-        ("Database", "data/recommendations.db"),
-        ("ChromaDB", "data/chroma_db"),
+        ("SQLite Database", "data/recommendations.db"),
+        ("Vector Index (ChromaDB)", "data/chroma_db"),
     ]
-
+    
+    all_ready = True
     for name, path in files_to_check:
         exists = os.path.exists(path)
-        st.write(f"**{name}:** {'✅ Ready' if exists else '❌ Missing'}")
-
-    st.subheader("API Status")
+        status = "✅ Ready" if exists else "❌ Missing"
+        st.write(f"**{name}:** {status}")
+        if not exists:
+            all_ready = False
+    
+    st.divider()
+    
+    # Model information
+    st.subheader("🧠 Model Information")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Vision Model:**")
+        st.code("CLIP ViT-B/32\n512-dimensional embeddings")
+    
+    with col2:
+        st.write("**Text Model:**")
+        st.code("all-MiniLM-L6-v2\n384-dimensional embeddings")
+    
+    st.write("**Combined Embedding Dimension:** 896-dim")
+    
+    st.divider()
+    
+    # System resources
+    st.subheader("💻 System Resources")
     try:
-        resp = requests.get("http://localhost:8000/", timeout=5)
-        if resp.status_code == 200:
-            st.success("API is running")
-        else:
-            st.error(f"❌ API returned status {resp.status_code}")
-    except Exception:
-        st.warning("⚠️ API is not running. Start it with: `python src/api/app.py`")
-
-    st.subheader("Model Information")
-    st.write("**Vision Model:** CLIP ViT-B/32 (512-dim)")
-    st.write("**Text Model:** all-MiniLM-L6-v2 (384-dim)")
-    st.write("**Combined Embedding:** 896-dim")
-
-    st.subheader("System Resources")
-    st.write(f"**CPU Usage:** {psutil.cpu_percent()}%")
-    st.write(f"**RAM Usage:** {psutil.virtual_memory().percent}%")
+        import psutil
+        cpu_usage = psutil.cpu_percent()
+        ram_usage = psutil.virtual_memory().percent
+        
+        col1, col2 = st.columns(2)
+        col1.metric("CPU Usage", f"{cpu_usage}%")
+        col2.metric("RAM Usage", f"{ram_usage}%")
+    except Exception as e:
+        st.info(f"Could not retrieve system metrics: {e}")
+    
+    st.divider()
+    
+    # Status summary
+    st.subheader("📊 Overall Status")
+    if all_ready:
+        st.success("✅ All systems ready! The app is fully functional.")
+    else:
+        st.warning("⏳ Pipeline is still initializing. Please refresh in a few minutes.")
