@@ -1,38 +1,28 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, udf
-from pyspark.sql.types import StringType
+import pandas as pd
+import numpy as np
+import os
 
-spark = (
-    SparkSession.builder.appName("LocalRecommendations")
-    .master("local[*]")
-    .config("spark.driver.memory", "4g")
-    .config("spark.sql.shuffle.partitions", "4")
-    .getOrCreate()
-)
+print("Starting preprocessing...")
 
-print("✓ Spark session created (local mode)")
+# Create output directory
+os.makedirs("data/processed", exist_ok=True)
 
-df_products = spark.read.csv("data/raw/products.csv", header=True, inferSchema=True)
-print(f"Loaded {df_products.count()} products")
+# Load sample data
+df = pd.read_csv("data/raw/products.csv")
 
-df_clean = (
-    df_products.filter(col("product_id").isNotNull())
-    .filter(col("description").isNotNull())
-    .dropDuplicates(["product_id"])
-)
+print(f"Loaded {len(df)} products")
 
+# Basic cleaning
+df = df.dropna(subset=['title', 'category', 'price'])
+df['price'] = pd.to_numeric(df['price'], errors='coerce')
+df = df.dropna(subset=['price'])
+df = df[df['price'] > 0]
 
-@udf(StringType())
-def add_image_path(product_id):
-    return f"data/raw/images/{product_id}.jpg"
+# Remove duplicates
+df = df.drop_duplicates(subset=['title'])
 
+print(f"Cleaned to {len(df)} products")
 
-df_clean = df_clean.withColumn("image_path", add_image_path(col("product_id")))
+# Save cleaned data
+df.to_parquet("data/processed/products_clean.parquet", index=False)
 
-df_clean.write.mode("overwrite").parquet("data/processed/products_clean.parquet")
-
-print("✓ Cleaned data saved to data/processed/products_clean.parquet")
-print(f"✓ {df_clean.count()} products ready for embedding generation")
-
-df_clean.show(5)
-spark.stop()
